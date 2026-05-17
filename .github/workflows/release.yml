@@ -1,0 +1,82 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: '${{ github.workflow }}-${{ github.ref }}'
+  cancel-in-progress: true
+
+jobs:
+  release-windows:
+    name: Build Windows x64 release package
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Validate tag vs package.json
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $pkgVersion = "v$((Get-Content package.json | ConvertFrom-Json).version)"
+          if ($tag -ne $pkgVersion) {
+            Write-Error "Tag $tag does not match package.json $pkgVersion"
+            exit 1
+          }
+          Write-Host "Version $tag is consistent"
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Build plugin scripts
+        run: npm run build
+
+      - name: Build claude-mem executable
+        run: npm run build:binaries
+
+      - name: Package release asset
+        shell: pwsh
+        run: |
+          $stage = Join-Path $env:RUNNER_TEMP "claude-mem-windows-x64"
+          Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $stage | Out-Null
+
+          Copy-Item -LiteralPath "dist/binaries/claude-mem.exe" -Destination (Join-Path $stage "claude-mem.exe")
+          Copy-Item -LiteralPath "plugin" -Destination $stage -Recurse
+
+          if (-not (Test-Path -LiteralPath (Join-Path $stage "plugin/scripts/worker-service.cjs"))) {
+            Write-Error "plugin/scripts/worker-service.cjs is missing from release package"
+            exit 1
+          }
+
+          Compress-Archive -Path (Join-Path $stage "*") -DestinationPath "claude-mem-windows-x64.zip" -Force
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-mem-windows-x64
+          path: claude-mem-windows-x64.zip
+
+      - name: Upload GitHub release asset
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: 'claude-mem ${{ github.ref_name }}'
+          files: claude-mem-windows-x64.zip
