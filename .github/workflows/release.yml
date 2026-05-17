@@ -44,7 +44,10 @@ jobs:
             asset: windows-x64
             binary: claude-mem.exe
           - os: windows-latest
-            bun_target: bun-windows-arm64
+            # Bun's native windows-arm64 compile target is not reliable on GitHub
+            # Actions yet. Windows on ARM supports x64 executables via emulation,
+            # so publish a compatible package for FrogClaw ARM64 builds.
+            bun_target: bun-windows-x64
             asset: windows-arm64
             binary: claude-mem.exe
           - os: ubuntu-latest
