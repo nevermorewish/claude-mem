@@ -14,9 +14,56 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  release-windows:
-    name: Build Windows x64 release package
-    runs-on: windows-latest
+  validate:
+    name: Validate version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate tag vs package.json
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          pkg_version="v$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg_version" ]; then
+            echo "::error::Tag $tag does not match package.json $pkg_version"
+            exit 1
+          fi
+          echo "Version $tag is consistent"
+
+  release:
+    name: Build ${{ matrix.asset }}
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            bun_target: bun-windows-x64
+            asset: windows-x64
+            binary: claude-mem.exe
+          - os: windows-latest
+            bun_target: bun-windows-arm64
+            asset: windows-arm64
+            binary: claude-mem.exe
+          - os: ubuntu-latest
+            bun_target: bun-linux-x64
+            asset: linux-x64
+            binary: claude-mem
+          - os: ubuntu-latest
+            bun_target: bun-linux-arm64
+            asset: linux-arm64
+            binary: claude-mem
+          - os: macos-latest
+            bun_target: bun-darwin-x64
+            asset: macos-x64
+            binary: claude-mem
+          - os: macos-latest
+            bun_target: bun-darwin-arm64
+            asset: macos-arm64
+            binary: claude-mem
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
@@ -29,49 +76,52 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Validate tag vs package.json
-        if: startsWith(github.ref, 'refs/tags/')
-        shell: pwsh
-        run: |
-          $tag = $env:GITHUB_REF_NAME
-          $pkgVersion = "v$((Get-Content package.json | ConvertFrom-Json).version)"
-          if ($tag -ne $pkgVersion) {
-            Write-Error "Tag $tag does not match package.json $pkgVersion"
-            exit 1
-          }
-          Write-Host "Version $tag is consistent"
-
       - name: Install dependencies
         run: npm install --no-audit --no-fund
 
       - name: Build plugin scripts
         run: npm run build
 
+      - name: Install plugin runtime dependencies
+        working-directory: plugin
+        run: npm install --no-audit --no-fund --omit=dev --ignore-scripts
+
       - name: Build claude-mem executable
+        env:
+          CLAUDE_MEM_BINARY_TARGET: ${{ matrix.bun_target }}
+          CLAUDE_MEM_BINARY_OUTFILE: dist/binaries/${{ matrix.binary }}
         run: npm run build:binaries
 
       - name: Package release asset
-        shell: pwsh
+        shell: bash
         run: |
-          $stage = Join-Path $env:RUNNER_TEMP "claude-mem-windows-x64"
-          Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
-          New-Item -ItemType Directory -Path $stage | Out-Null
+          set -euo pipefail
+          stage="${RUNNER_TEMP}/claude-mem-${{ matrix.asset }}"
+          rm -rf "$stage"
+          mkdir -p "$stage"
 
-          Copy-Item -LiteralPath "dist/binaries/claude-mem.exe" -Destination (Join-Path $stage "claude-mem.exe")
-          Copy-Item -LiteralPath "plugin" -Destination $stage -Recurse
+          cp "dist/binaries/${{ matrix.binary }}" "$stage/${{ matrix.binary }}"
+          cp -R plugin "$stage/plugin"
 
-          if (-not (Test-Path -LiteralPath (Join-Path $stage "plugin/scripts/worker-service.cjs"))) {
-            Write-Error "plugin/scripts/worker-service.cjs is missing from release package"
-            exit 1
-          }
+          test -s "$stage/${{ matrix.binary }}"
+          test -f "$stage/plugin/scripts/worker-service.cjs"
+          test -f "$stage/plugin/node_modules/zod/package.json"
 
-          Compress-Archive -Path (Join-Path $stage "*") -DestinationPath "claude-mem-windows-x64.zip" -Force
+          if [ "${{ matrix.binary }}" = "claude-mem" ]; then
+            chmod +x "$stage/claude-mem"
+          fi
+
+          if command -v zip >/dev/null 2>&1; then
+            (cd "$stage" && zip -qr "$GITHUB_WORKSPACE/claude-mem-${{ matrix.asset }}.zip" .)
+          else
+            STAGE="$stage" ASSET="${{ matrix.asset }}" powershell -NoProfile -Command "Compress-Archive -Path (Join-Path \$env:STAGE '*') -DestinationPath (Join-Path \$env:GITHUB_WORKSPACE ('claude-mem-' + \$env:ASSET + '.zip')) -Force"
+          fi
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: claude-mem-windows-x64
-          path: claude-mem-windows-x64.zip
+          name: claude-mem-${{ matrix.asset }}
+          path: claude-mem-${{ matrix.asset }}.zip
 
       - name: Upload GitHub release asset
         if: startsWith(github.ref, 'refs/tags/')
@@ -79,4 +129,4 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: 'claude-mem ${{ github.ref_name }}'
-          files: claude-mem-windows-x64.zip
+          files: claude-mem-${{ matrix.asset }}.zip

@@ -6,16 +6,18 @@ import fs from 'fs';
 const version = JSON.parse(fs.readFileSync('package.json', 'utf-8')).version;
 const outDir = 'dist/binaries';
 const target = process.env.CLAUDE_MEM_BINARY_TARGET || 'bun-windows-x64';
-const outfile = process.env.CLAUDE_MEM_BINARY_OUTFILE || `${outDir}/claude-mem.exe`;
+const defaultBinaryName = target.includes('windows') ? 'claude-mem.exe' : 'claude-mem';
+const outfile = process.env.CLAUDE_MEM_BINARY_OUTFILE || `${outDir}/${defaultBinaryName}`;
 const legacyOutfile = `${outDir}/worker-service-v${version}-win-x64.exe`;
 
 fs.mkdirSync(outDir, { recursive: true });
 
-console.log(`Building claude-mem ${target} exe v${version}...`);
+console.log(`Building claude-mem ${target} binary v${version}...`);
 
 try {
+  const windowsFlags = target.includes('windows') ? ' --windows-hide-console' : '';
   execSync(
-    `bun build --compile --minify --windows-hide-console --target=${target} ./src/services/worker-service.ts --outfile ${outfile}`,
+    `bun build --compile --minify${windowsFlags} --target=${target} ./src/services/worker-service.ts --outfile ${outfile}`,
     { stdio: 'inherit' }
   );
   console.log(`\nBuilt: ${outfile}`);
